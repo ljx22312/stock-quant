@@ -180,13 +180,18 @@ def _read_local(path: Path, vol_is_share: bool) -> list[list]:
 
 
 KLINE_HOSTS = ("https://ifzq.gtimg.cn", "https://web.ifzq.gtimg.cn")  # web. 前缀偶发 501，裸域优先
+CACHE_VER = 2  # v2: 基底改为腾讯前复权全历史（消除 tdx 不复权里的份额折算/拆分跳空）
 
 
-def _tencent_daily(sym: str, want: int = 120) -> list[list]:
-    """fqkline：[date, open, close, high, low, volume(手), ...] → 本模块行格式（amount 估算）。"""
+def _fqkline(sym: str, want: int, start: str = "", end: str = "") -> list[list]:
+    """一页腾讯前复权日线 → [date,o,h,l,c,vol手,amount估算(元)]。
+
+    裸域只支持显式 start,end 区间；取最新一页时 start/end 均留空。
+    """
     last_err = None
+    param = f"{sym},day,{start},{end},{want},qfq"
     for host in KLINE_HOSTS:
-        url = (f"{host}/appstock/app/fqkline/get?param={sym},day,,,{want},qfq")
+        url = f"{host}/appstock/app/fqkline/get?param={param}"
         try:
             raw = _http(url)
         except Exception as e:  # noqa: BLE001
@@ -205,6 +210,28 @@ def _tencent_daily(sym: str, want: int = 120) -> list[list]:
                 continue
         return out
     raise last_err or RuntimeError("fqkline all hosts failed")
+
+
+def _tencent_qfq_full(sym: str) -> list[list]:
+    """分页拉全历史前复权（最多 8 页 × 800 根）。"""
+    rows: dict[str, list] = {}
+    page = _fqkline(sym, 800)
+    for r in page:
+        rows[r[0]] = r
+    end = page[0][0] if page else ""
+    for _ in range(8):
+        if not end or len(page) < 800:
+            break
+        page = _fqkline(sym, 800, start="1990-01-01", end=end)
+        if not page:
+            break
+        earliest = page[0][0]
+        for r in page:
+            rows[r[0]] = r
+        if earliest >= end or len(page) < 800:
+            break
+        end = earliest
+    return [rows[k] for k in sorted(rows)]
 
 
 def _drift(a: list[list], b: list[list]) -> bool:
@@ -228,39 +255,43 @@ def _need_refresh(meta: dict) -> bool:
 
 
 def _series(sym: str) -> list[list]:
-    """合并后的完整日线（可能网络失败时为本地基底）。行：[date,o,h,l,c,vol手,amount元]。"""
+    """前复权完整日线（腾讯基底；网络全失败时回退本地 tdx 不复权）。
+
+    行：[date,o,h,l,c,vol手,amount元]。发生新的分红/折算 → 腾讯整体重算
+    前复权基准 → 与缓存重叠日收盘出现漂移 → 整段重拉替换。
+    """
     path, vol_is_share = _find_local(sym)
     if path is None:
         raise ValueError(f"unknown fund symbol: {sym}")
-    local = _read_local(path, vol_is_share)
     cache = CACHE_DIR / f"{sym}.json"
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    rows: list[list] = []
+    meta: dict = {}
     try:
         obj = json.loads(cache.read_text())
         rows, meta = obj["rows"], obj.get("meta", {})
     except Exception:
-        rows, meta = local, {}
-    # 本地文件比缓存新（tdx 推送恢复后），以本地为基底重算
-    if local and (not rows or (local[-1][0] > rows[-1][0] and rows[-1][0] not in {r[0] for r in local[-3:]})):
-        rows = local
-    if _need_refresh(meta) or not rows:
+        pass
+    legacy = meta.get("v") != CACHE_VER  # 旧基底缓存一律重拉
+    if _need_refresh(meta) or not rows or legacy:
         try:
-            tail = _tencent_daily(sym, want=90)
+            tail = _fqkline(sym, 90)
             if tail:
-                if _drift(rows or local, tail):
-                    big = _tencent_daily(sym, want=800) or tail  # 除权 → 改用腾讯整段
-                    rows = big
-                else:
+                if rows and not legacy and not _drift(rows, tail):
                     have = {r[0] for r in rows}
                     rows = rows + [r for r in tail if r[0] not in have]
+                else:
+                    rows = _tencent_qfq_full(sym) or tail
+            if rows:
+                meta = {"v": CACHE_VER, "fetched_at": time.time(), "src": "tencent_qfq"}
         except Exception:
-            pass  # 网络失败：保留旧数据
-        else:
-            meta = {"fetched_at": time.time(), "src": path.name}
-        try:
-            cache.write_text(json.dumps({"rows": rows, "meta": meta}, ensure_ascii=False))
-        except Exception:
-            pass
+            if not rows:
+                rows = _read_local(path, vol_is_share)  # 兜底：本地 tdx（不复权）
+        if rows:
+            try:
+                cache.write_text(json.dumps({"rows": rows, "meta": meta}, ensure_ascii=False))
+            except Exception:
+                pass
     return rows
 
 
