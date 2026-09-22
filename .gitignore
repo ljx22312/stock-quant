@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.persp_probe/
+persp_probe/
+results/
+*.log
+.DS_Store
