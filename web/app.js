@@ -21,6 +21,8 @@ const store = {
   showAllSignals: false, // 是否显示全部历史信号标记
   market: null,      // 大盘温度（/api/market，云版无此端点则为 null）
   marketAt: 0,       // 大盘温度上次拉取时间
+  etf: { list: [], at: 0, cat: 'all' },  // ETF 页：目录+行情缓存、当前类别
+  etfQuotes: {},     // symbol -> ETF 实时行情（snapshot 同形，供详情页头部复用）
   valsnap: null,     // {sym, data} 详情页收盘估值/资金快照
   valMetric: 'pe_ttm', // 估值历史当前指标
   valReq: 0, flowReq: 0, // 估值/资金流请求序号（竞态守卫）
@@ -82,8 +84,13 @@ function quoteGridHtml(q) {
     </div>`;
 }
 
-function findItem(sym) { return store.dir.find(d => d.symbol === sym); }
-function snap(sym) { return store.snaps[sym]; }
+function findItem(sym) {
+  const d = store.dir.find(d => d.symbol === sym);
+  if (d) return d;
+  const e = store.etfQuotes[sym];
+  return e ? { symbol: sym, name: e.name, type: 'etf' } : undefined;
+}
+function snap(sym) { return store.snaps[sym] || store.etfQuotes[sym]; }
 
 async function refreshSnapshots() {
   const list = await api('/quote');
@@ -172,6 +179,42 @@ function renderIndex() {
   document.getElementById('content').innerHTML = `<div class="tabs">${tabHtml}</div>${listHtml}`;
   document.querySelectorAll('#content .tab').forEach(el =>
     el.onclick = () => { store.kind = el.dataset.kind; renderIndex(); });
+  document.querySelectorAll('#content .card').forEach(el =>
+    el.onclick = () => showDetail(el.dataset.sym));
+}
+
+// ---------- 页面：ETF（精选场内基金，腾讯实时行情；日线=本地 tdx+增量合并） ----------
+const ETF_CATS = [['all', '全部'], ['broad', '宽基'], ['cross', '跨境'], ['sector', '行业'], ['cmdty', '商品'], ['bond', '债券']];
+async function renderEtf() {
+  const el = document.getElementById('content');
+  if (!store.etf.list.length || Date.now() - store.etf.at > 60000) {
+    el.innerHTML = '<div class="empty">加载中…</div>';
+    try {
+      store.etf.list = await api('/etf');
+      store.etf.at = Date.now();
+      store.etfQuotes = Object.fromEntries(store.etf.list.map(it => [it.symbol, it]));
+    } catch (e) {
+      el.innerHTML = `<div class="empty">ETF 数据加载失败: ${e.message}</div>`;
+      return;
+    }
+    if (store.page !== 'etf') return; // 已切走
+  }
+  const cat = store.etf.cat;
+  const items = cat === 'all' ? store.etf.list : store.etf.list.filter(i => i.cat === cat);
+  const tabHtml = ETF_CATS.map(([k, t]) =>
+    `<span class="tab ${k === cat ? 'active' : ''}" data-cat="${k}">${t}</span>`).join('');
+  const stale = store.etf.list.some(i => i.stale);
+  const listHtml = items.map(it => `
+    <div class="card" data-sym="${it.symbol}">
+      <div><div class="name">${esc(it.name)}</div><div class="sub">${esc(it.symbol)}${it.cat_name ? ' · ' + esc(it.cat_name) : ''}</div></div>
+      <div class="num price ${cls(it.pct_chg)}">${it.price != null ? it.price.toFixed(3) : '-'}</div>
+      <div class="num"><span class="pct-pill ${cls(it.pct_chg) || 'flat'}">${fmtPct(it.pct_chg)}</span><br>
+      <span style="font-size:11px;color:#8a8f98">${it.amount_wan != null ? fmtAmt(it.amount_wan) : '-'}</span></div>
+    </div>`).join('');
+  el.innerHTML = (stale ? '<div class="empty" style="padding:6px">行情源暂不可达，显示为缓存数据</div>' : '') +
+    `<div class="tabs">${tabHtml}</div>` + (listHtml || '<div class="empty">该类别暂无标的</div>');
+  document.querySelectorAll('#content .tab').forEach(el =>
+    el.onclick = () => { store.etf.cat = el.dataset.cat; renderEtf(); });
   document.querySelectorAll('#content .card').forEach(el =>
     el.onclick = () => showDetail(el.dataset.sym));
 }
@@ -352,6 +395,12 @@ function closeMacroDetail() {
 // ---------- 详情页（K线） ----------
 async function showDetail(sym, markSignal = null) {
   const it = findItem(sym) || { symbol: sym, name: sym, type: 'stock' };
+  const isEtf = it.type === 'etf';
+  if (isEtf && (store.chartType === 'hour' || store.chartType === 'tick')) store.chartType = 'daily';
+  // ETF 无小时线/分时数据，隐藏对应切换按钮（切回个股时恢复）
+  document.querySelectorAll('#ctype button').forEach(b => {
+    b.style.display = (isEtf && (b.dataset.type === 'hour' || b.dataset.type === 'tick')) ? 'none' : '';
+  });
   store.detail = sym;
   store.markSignal = markSignal;
   if (markSignal) {
@@ -423,15 +472,17 @@ async function loadChart(sym, limit) {
   document.querySelectorAll('#ranges button').forEach(b => b.classList.toggle('active', +b.dataset.limit === limit));
   let bars;
   const type = store.chartType;
+  const isEtf = (findItem(sym) || {}).type === 'etf';
   if (type === 'tick') bars = await api(`/tick?symbol=${sym}`);
   else if (type === 'hour') bars = await api(`/hour?symbol=${sym}&limit=${limit}`);
   else if (type === 'week' || type === 'month') {
     // 周/月：多拉日线再聚合（周线 limit*5 天，月线 limit*22 天）
     const days = type === 'week' ? limit * 5 : limit * 22;
-    const raw = await api(`/daily?symbol=${sym}&limit=${Math.min(days, 2000)}`);
+    const dailyPath = isEtf ? '/etfdaily' : '/daily';
+    const raw = await api(`${dailyPath}?symbol=${sym}&limit=${Math.min(days, 2000)}`);
     bars = aggregateBars(raw, type);
   }
-  else bars = await api(`/daily?symbol=${sym}&limit=${limit}`);
+  else bars = await api(`${isEtf ? '/etfdaily' : '/daily'}?symbol=${sym}&limit=${limit}`);
   if (req !== store.chartReq) return; // 已被更新的请求/关闭取代
   const sigs = await ensureSignalHist(sym);
   if (req !== store.chartReq) return;
@@ -843,7 +894,7 @@ function renderFundFlow(sym, data) {
 }
 
 // ---------- 导航 ----------
-const pages = { watch: renderWatch, index: renderIndex, macro: renderMacro, signals: renderSignals, me: renderMe };
+const pages = { watch: renderWatch, index: renderIndex, etf: renderEtf, macro: renderMacro, signals: renderSignals, me: renderMe };
 function switchPage(p) {
   store.page = p;
   hideDetail();
@@ -862,7 +913,14 @@ async function boot() {
   setInterval(async () => {
     await refreshSnapshots().catch(() => {});
     if (document.getElementById('detail').style.display === 'block') {
+      if (store.etfQuotes[store.detail]) {  // ETF 详情：单独刷新该只行情
+        api('/etf?symbols=' + store.detail)
+          .then(l => { if (l[0] && !l[0].stale) { store.etfQuotes[store.detail] = l[0]; loadChartHeaderOnly(); } })
+          .catch(() => {});
+      }
       const q = snap(store.detail); if (q) loadChartHeaderOnly();
+    } else if (store.page === 'etf') {
+      store.etf.at = 0; renderEtf();
     } else if (store.page === 'watch' || store.page === 'index') {
       pages[store.page]();
     }
@@ -1056,6 +1114,12 @@ const HELP = {
     what: '指数不是一只股票，而是一篮子股票的综合表现。比如上证指数代表整个沪市大盘，沪深300代表规模最大的 300 家公司。',
     when: '想快速知道整个市场今天好不好、大环境怎么样，就看指数。',
     prompt: '用大白话解释什么是股票"指数"？宽基指数、规模指数、基准指数都是什么意思？',
+  },
+  etf: {
+    title: 'ETF',
+    what: 'ETF 是"一篮子证券"的基金，像股票一样在场内买卖。这里精选了 49 只代表性品种：宽基（沪深300、A500）、行业（半导体、创新药）、跨境（纳指、恒生科技）、商品（黄金、原油）与债券/货币，覆盖大多数常见投资方向。',
+    when: '不想选个股、只想跟某个方向（大盘/行业/黄金/海外）的涨跌，先来这里看对应 ETF 的走势和成交热度。',
+    prompt: '用大白话讲讲什么是 ETF？买 ETF 和买股票有什么区别？宽基、行业、跨境 ETF 分别适合什么人？',
   },
   signal: {
     title: '信号',

@@ -34,6 +34,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 
+import etf_data  # noqa: E402  ETF/场内基金数据模块（精选目录+腾讯行情+日线合并）
+
 # ---------- 配置 ----------
 def load_dotenv(path: Path):
     try:
@@ -708,9 +710,19 @@ def api_fundflow(q):
     return {"symbol": symbol, "count": len(out), "rows": out} if out else {}
 
 
+def api_etf(q):
+    """/api/etf：ETF 精选目录 + 腾讯实时行情（合并返回）。"""
+    return etf_data.etf_list(q)
+
+
+def api_etfdaily(q):
+    """/api/etfdaily?symbol=sh510300&limit=250：ETF 日线（本地 tdx + 腾讯增量）。"""
+    return etf_data.etf_daily(q)
+
+
 # ---------- HTTP 服务 ----------
 CACHE_TTL = {"quote": 30, "tick": 30, "signals": 15, "market": 600, "valsnap": 600,
-             "valuation": 600, "fundflow": 600}
+             "valuation": 600, "fundflow": 600, "etf": 60, "etfdaily": 300}
 CACHE_DEFAULT = 300
 _cache = {}
 _cache_lock = threading.Lock()
@@ -899,7 +911,7 @@ class Handler(BaseHTTPRequestHandler):
         route = path[len("/api"):].rstrip("/") or "/health"
         routes = ["/health", "/quote", "/daily", "/stocks", "/signals", "/stats",
                   "/hour", "/tick", "/profile", "/macro", "/market", "/valsnap",
-                  "/valuation", "/fundflow"]
+                  "/valuation", "/fundflow", "/etf", "/etfdaily"]
         hit = next((r for r in routes if route.endswith(r)), None)
         if not hit:
             return self._send(404, {"error": f"not found (path={path})"})
@@ -942,6 +954,10 @@ class Handler(BaseHTTPRequestHandler):
             return {"data": api_valuation(q), "ts": ts}
         if hit == "/fundflow":
             return {"data": api_fundflow(q), "ts": ts}
+        if hit == "/etf":
+            return {"data": api_etf(q), "ts": ts}
+        if hit == "/etfdaily":
+            return {"data": api_etfdaily(q), "ts": ts}
         raise ValueError("unknown route")
 
 

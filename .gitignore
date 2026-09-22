@@ -32,3 +32,4 @@ ai/skill/**/__pycache__/
 # 每日归档（构建/运行时产物）
 data/daily_archive/
 data/intraday/
+data/etf_cache/
