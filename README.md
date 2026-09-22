@@ -80,15 +80,22 @@ python3 data_service.py             # 监听 127.0.0.1:8791
 
 ### 2. 网页
 
-`web/` 是纯静态页，任意静态服务器托管后把 API 反代到数据服务即可。nginx 示例：
+`web/` 是纯静态页，任意静态服务器托管后把 API 反代到数据服务即可。nginx 示例
+（完整可用版见 `deploy/nginx-stockdesk.conf`）：
 
 ```nginx
 server {
     listen 80;
-    root /home/admin/stock-alert/web;
-    location /api/          { proxy_pass http://127.0.0.1:8791/api/; }
-    location /ingest        { proxy_pass http://127.0.0.1:8791/ingest; }
-    location /collections/  { proxy_pass http://127.0.0.1:8791/collections/; }
+    server_name stock-16601896519.site www.stock-16601896519.site;
+    root /home/ubuntu/stock-alert/web;
+    index index.html;
+
+    # 同源 API / AI 队列：必须透传 Host，数据服务按 Host 白名单放行 /collections
+    location /api/          { proxy_pass http://127.0.0.1:8791/api/;         proxy_set_header Host $host; }
+    location /ingest        { proxy_pass http://127.0.0.1:8791/ingest;       proxy_set_header Host $host; }
+    location /collections/  { proxy_pass http://127.0.0.1:8791/collections/; proxy_set_header Host $host; proxy_buffering off; }
+
+    location / { try_files $uri $uri/ =404; }
 }
 ```
 

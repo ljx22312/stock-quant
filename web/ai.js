@@ -68,6 +68,51 @@ function msgEl(m) {
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const linkify = s => s.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
 
+// ---- 一键复制当前对话 ----
+function conversationText() {
+  const head = `StockDesk AI 对话记录（${new Date().toLocaleString('zh-CN')}）\n`;
+  const body = ai.msgs.map((m) => {
+    const who = m.role === 'user' ? '【我】' : '【AI】';
+    let s = who + '\n' + (m.text || '（无内容）');
+    if (m.thinking) s += '\n\n[思考过程]\n' + m.thinking;
+    return s;
+  }).join('\n\n────────\n\n');
+  return head + '\n' + body;
+}
+
+// 非安全上下文（http 域名）下 navigator.clipboard 不可用，退回 execCommand
+function legacyCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } finally { ta.remove(); }
+  if (!ok) throw new Error('浏览器拒绝复制');
+}
+
+async function copyAll() {
+  if (!ai.msgs.length) { aiToast('当前对话为空'); return; }
+  const text = conversationText();
+  const n = ai.msgs.length;
+  try {
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      legacyCopy(text);
+    }
+    aiToast(`已复制全部对话（${n} 条）`);
+  } catch (e) {
+    try { legacyCopy(text); aiToast(`已复制全部对话（${n} 条）`); }
+    catch (e2) { aiToast('复制失败：' + (e2.message || e.message), true); }
+  }
+}
+
 function bindAi() {
   document.getElementById('ai-fab').onclick = openAi;
   document.getElementById('ai-close').onclick = closeAi;
@@ -79,6 +124,7 @@ function bindAi() {
   document.getElementById('ai-skill').onchange = e => { ai.skill = e.target.value; localStorage.setItem('stockdesk_ai_skill', ai.skill); };
   document.getElementById('ai-stop').onclick = stopCurrent;
   document.getElementById('ai-clear').onclick = clearChat;
+  document.getElementById('ai-copy').onclick = copyAll;
   // 记录用户对思考块的手动开合（toggle 事件不冒泡，用捕获监听）
   document.getElementById('ai-msgs').addEventListener('toggle', e => {
     if (!e.target.classList || !e.target.classList.contains('ai-thinking')) return;

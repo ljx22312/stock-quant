@@ -3,7 +3,9 @@
 export default function (pi) {
   pi.registerProvider("kimi", {
     name: "Kimi (api.kimi.com)",
-    baseUrl: "https://api.kimi.com/coding/v1",
+    // 走本机 key 故障转移代理（kimi-failover-proxy.js，127.0.0.1:8799）：
+    // 主 key 额度耗尽自动改用 KIMI_API_KEY_BACKUP 重发，主 key 恢复后自动切回。
+    baseUrl: process.env.KIMI_BASE_URL || "http://127.0.0.1:8799/v1",
     apiKey: process.env.KIMI_API_KEY,
     authHeader: true,
     api: "openai-completions",

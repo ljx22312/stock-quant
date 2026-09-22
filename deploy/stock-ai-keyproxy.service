@@ -1,0 +1,16 @@
+[Unit]
+Description=StockDesk Kimi API key failover proxy (primary first, auto-switch to backup on quota)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/stock-ai
+EnvironmentFile=/home/ubuntu/stock-ai/.env
+ExecStart=/usr/local/bin/node kimi-failover-proxy.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
