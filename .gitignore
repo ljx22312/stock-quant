@@ -5,3 +5,4 @@ persp_probe/
 results/
 *.log
 .DS_Store
+qbacktest/cache/
