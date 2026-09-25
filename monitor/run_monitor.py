@@ -66,6 +66,7 @@ class Engine:
         self.flushed_ts: dict[str, float] = {}
         self.last_flush = 0.0
         self.today = datetime.now().strftime("%Y%m%d")
+        self._stale_log_day = ""  # 休市防护的"当日已告警"标记，避免每个周期刷日志
         self.rules = [(n, INTRADAY_RULES[n]) for n in config["intraday_rules_enabled"]
                       if n in INTRADAY_RULES]
         self.index_rules = [(n, INDEX_RULES[n]) for n in config.get("index_rules_enabled", [])
@@ -141,6 +142,19 @@ class Engine:
         quotes = fetch_quotes(self.symbols, extra_codes=extra)
         if not quotes:
             raise RuntimeError("行情拉取为空")
+
+        # 休市防护：节假日快照冻结在前一交易日（quote_time 日期非今天），跳过评估与
+        # 轨迹记录。否则 fast_drop 在"开盘回退今开"分支会把前一交易日开盘->收盘的
+        # 全天涨跌当成 30 分钟变动误报。仅在明确识别到过期快照时拦截，缺字段则放行。
+        today = datetime.now().strftime("%Y%m%d")
+        sample = quotes.get(self.symbols[0]) or next(iter(quotes.values()))
+        qt = str(sample.get("quote_time", ""))
+        if qt and qt[:8] != today:
+            if self._stale_log_day != today:
+                log.info("行情快照日期为 %s（非今日，休市），跳过评估", qt[:8])
+                self._stale_log_day = today
+            return
+
         now = int(time.time())
 
         for symbol, q in quotes.items():
