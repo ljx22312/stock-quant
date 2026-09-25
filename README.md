@@ -151,3 +151,14 @@ python3 monitor/run_daily.py                 # 手动跑一次日线任务
   规则不会误触发，但进程不退出）。需要精确交易日历可后续加。
 - 推送依赖 WxPusher 免费额度，规则触发频繁时请加大 `cooldown_minutes`。
 - 下载类脚本（dl_eastmoney / dl_fund_hold）为断点续传/外机运行设计，见各文件头部说明。
+
+## backtest/ —— 量化回测工作区
+
+本仓库自 2026-09-25 起合并量化回测子系统（backtest/ 子目录，独立提交历史经 subtree 并入）：
+
+- backtest/qbacktest/ —— 零依赖回测框架（引擎/记账/指标/策略/测试，详见其 README）
+- backtest/factors/ —— 独立因子库（F2/F4/F6、影线类 + factor_lib 算子库）
+- backtest/*.py —— 全市场因子检验（IC/分层/多空）、市场状态分析、数据审计脚本
+- backtest/BACKTEST_GUIDE.md —— 回测口径与数据说明（必读）
+
+数据不入库（.gitignore 排除语料/结果/缓存）。
